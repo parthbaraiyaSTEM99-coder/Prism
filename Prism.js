@@ -583,27 +583,6 @@ function debounce(fn, delay = 150) {
   };
 }
 
-function attachVisibilityToggle(inputEl, toggleBtnEl) {
-  if (!inputEl || !toggleBtnEl) return;
-  toggleBtnEl.setAttribute("aria-label", "Show");
-  toggleBtnEl.textContent = "👁️";
-  toggleBtnEl.addEventListener("click", () => {
-    if (inputEl.tagName === "INPUT" && (inputEl.type === "password" || inputEl.type === "text")) {
-      const willShow = inputEl.type === "password";
-      inputEl.type = willShow ? "text" : "password";
-      toggleBtnEl.textContent = willShow ? "🙈" : "👁️";
-      toggleBtnEl.setAttribute("aria-label", willShow ? "Hide" : "Show");
-    } else {
-      const willShow = inputEl.dataset.masked !== "false";
-      if (inputEl.dataset.realValue === undefined) inputEl.dataset.realValue = inputEl.textContent;
-      inputEl.textContent = willShow ? inputEl.dataset.realValue : "•".repeat(Math.max(4, inputEl.dataset.realValue.length));
-      inputEl.dataset.masked = willShow ? "false" : "true";
-      toggleBtnEl.textContent = willShow ? "🙈" : "👁️";
-      toggleBtnEl.setAttribute("aria-label", willShow ? "Hide" : "Show");
-    }
-  });
-}
-
 const miniPlayerRegistry = [];
 
 function registerMiniPlayer(key, offFn, isOnFn) {
@@ -2265,12 +2244,6 @@ class UserAccountSystem {
         }
       });
     }
-    attachVisibilityToggle(document.getElementById("login-password"), document.getElementById("toggle-login-password"));
-    attachVisibilityToggle(document.getElementById("signup-password"), document.getElementById("toggle-signup-password"));
-    attachVisibilityToggle(document.getElementById("signup-confirm"), document.getElementById("toggle-signup-confirm"));
-    attachVisibilityToggle(document.getElementById("reset-new-password"), document.getElementById("toggle-reset-new-password"));
-    attachVisibilityToggle(document.getElementById("signup-passkey"), document.getElementById("toggle-signup-passkey"));
-    attachVisibilityToggle(document.getElementById("reset-passkey"), document.getElementById("toggle-reset-passkey"));
     const setSecurityQuestionsBtn = document.getElementById("set-security-questions-btn");
     if (setSecurityQuestionsBtn) {
       setSecurityQuestionsBtn.addEventListener("click", async () => {
@@ -15962,7 +15935,7 @@ Object.keys(QUEUE_TYPES).forEach(type => {
 
 (function() {
   var yearEl = document.getElementById("footer-year");
-  if (yearEl) yearEl.textContent = "© " + (new Date).getFullYear();
+  if (yearEl) yearEl.textContent = (new Date).getFullYear();
 })();
 
 function assignFilesToInputAndDispatch(targetInput, files) {
@@ -16492,4 +16465,1353 @@ FOLDER_PLAYLIST_IMPORT_WIRING.forEach(cfg => {
     }
     document.startViewTransition(() => originalShowPage(name));
   };
+})();
+(function() {
+  const STORE_KEY = "px:motion";
+  const MODES = [ "full", "reduced", "off" ];
+  const MAX_KEYED = 200;
+  const MAX_STAGGER = 12;
+  const osReduce = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+  const listeners = new Set;
+
+  function readSaved() {
+    try {
+      const v = window.localStorage.getItem(STORE_KEY);
+      return MODES.indexOf(v) !== -1 ? v : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function currentMode() {
+    const saved = readSaved();
+    if (saved) return saved;
+    return osReduce && osReduce.matches ? "reduced" : "full";
+  }
+
+  function syncSwitch() {
+    const wrap = document.getElementById("px-motion");
+    if (!wrap) return;
+    const mode = currentMode();
+    wrap.querySelectorAll("button").forEach(btn => {
+      btn.setAttribute("aria-pressed", btn.dataset.mode === mode ? "true" : "false");
+    });
+  }
+
+  function apply() {
+    document.documentElement.dataset.pxMotion = currentMode();
+    syncSwitch();
+    listeners.forEach(fn => {
+      try {
+        fn(currentMode());
+      } catch (e) {}
+    });
+  }
+
+  function setMode(mode) {
+    if (MODES.indexOf(mode) === -1) return;
+    try {
+      window.localStorage.setItem(STORE_KEY, mode);
+    } catch (e) {}
+    apply();
+  }
+
+  function timing() {
+    const mode = currentMode();
+    if (mode === "full") {
+      return {
+        dur: 240,
+        ease: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+        move: true,
+        stagger: 22
+      };
+    }
+    if (mode === "reduced") {
+      return {
+        dur: 140,
+        ease: "ease-out",
+        move: false,
+        stagger: 0
+      };
+    }
+    return null;
+  }
+
+  function play(el, frames, opts) {
+    if (!el || typeof el.animate !== "function") return null;
+    try {
+      return el.animate(frames, opts);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function snapshot(container) {
+    const map = new Map;
+    const rows = container.children;
+    if (!rows.length) return map;
+    const base = container.getBoundingClientRect().top;
+    const st = container.scrollTop;
+    for (let i = 0; i < rows.length && map.size < MAX_KEYED; i++) {
+      const key = rows[i].dataset && rows[i].dataset.pxk;
+      if (key === undefined) continue;
+      map.set(key, rows[i].getBoundingClientRect().top - base + st);
+    }
+    return map;
+  }
+
+  function animateList(container, before, t) {
+    const rows = container.children;
+    const base = container.getBoundingClientRect().top;
+    const st = container.scrollTop;
+    const plan = [];
+    for (let i = 0; i < rows.length && plan.length < MAX_KEYED; i++) {
+      const li = rows[i];
+      const key = li.dataset && li.dataset.pxk;
+      if (key === undefined) continue;
+      plan.push({
+        li: li,
+        key: key,
+        y: li.getBoundingClientRect().top - base + st
+      });
+    }
+    const hadRows = before.size > 0;
+    let entered = 0;
+    plan.forEach(item => {
+      if (hadRows) {
+        if (before.has(item.key)) {
+          if (!t.move) return;
+          const dy = before.get(item.key) - item.y;
+          if (Math.abs(dy) < 1) return;
+          play(item.li, [ {
+            transform: `translateY(${dy}px)`
+          }, {
+            transform: "translateY(0)"
+          } ], {
+            duration: t.dur,
+            easing: t.ease
+          });
+        } else {
+          play(item.li, t.move ? [ {
+            opacity: 0,
+            transform: "scale(0.96)"
+          }, {
+            opacity: 1,
+            transform: "scale(1)"
+          } ] : [ {
+            opacity: 0
+          }, {
+            opacity: 1
+          } ], {
+            duration: t.dur,
+            easing: t.ease
+          });
+        }
+      } else if (entered < MAX_STAGGER) {
+        play(item.li, t.move ? [ {
+          opacity: 0,
+          transform: "translateY(8px)"
+        }, {
+          opacity: 1,
+          transform: "translateY(0)"
+        } ] : [ {
+          opacity: 0
+        }, {
+          opacity: 1
+        } ], {
+          duration: t.dur,
+          delay: t.stagger * entered,
+          easing: t.ease,
+          fill: "backwards"
+        });
+        entered++;
+      }
+    });
+  }
+
+  function wrapListRenderer() {
+    if (typeof renderListBatched !== "function") return;
+    const original = renderListBatched;
+    renderListBatched = function(container, items, buildRowFn) {
+      const t = timing();
+      if (!t || !container || !Array.isArray(items) || items.length > MAX_KEYED) {
+        return original(container, items, buildRowFn);
+      }
+      const keyed = (item, i) => {
+        const li = buildRowFn(item, i);
+        if (li && li.dataset && item && item.id !== undefined && item.id !== null) {
+          li.dataset.pxk = String(item.id);
+        }
+        return li;
+      };
+      if (container.offsetParent === null) return original(container, items, keyed);
+      const before = snapshot(container);
+      const result = original(container, items, keyed);
+      animateList(container, before, t);
+      return result;
+    };
+  }
+
+  function buildSwitch() {
+    const wrap = document.getElementById("px-motion");
+    if (!wrap || wrap.querySelector("button")) return;
+    [ [ "full", "Full" ], [ "reduced", "Reduced" ], [ "off", "Off" ] ].forEach(pair => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "action-button action-button--compact";
+      btn.dataset.mode = pair[0];
+      btn.textContent = pair[1];
+      btn.addEventListener("click", () => setMode(pair[0]));
+      wrap.appendChild(btn);
+    });
+    syncSwitch();
+  }
+
+  window.PxMotion = {
+    mode: currentMode,
+    setMode: setMode,
+    timing: timing,
+    play: play,
+    onChange: fn => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    }
+  };
+
+  if (osReduce && typeof osReduce.addEventListener === "function") {
+    osReduce.addEventListener("change", apply);
+  }
+  apply();
+  buildSwitch();
+  wrapListRenderer();
+})();
+
+(function() {
+  const REG_KEY = "px:tags";
+  const HUES = [ 12, 36, 52, 96, 150, 190, 222, 266, 300, 336 ];
+  const MAX_NAME = 24;
+  const MAX_CHIPS = 2;
+  const EMPTY = new Set;
+  const TERMINALS = {};
+  [
+    [ "music", "music-list", "music-search", "music-count", "renderMusic", "music", () => typeof music !== "undefined" ? music : [] ],
+    [ "video", "video-list", "video-search", "video-count", "renderVideos", "videos", () => typeof videos !== "undefined" ? videos : [] ],
+    [ "podcast", "podcast-list", "podcast-search", "podcast-count", "renderPodcasts", "podcasts", () => typeof podcasts !== "undefined" ? podcasts : [] ],
+    [ "documentary", "documentary-list", "documentary-search", "documentary-count", "renderDocumentary", "documentaries", () => typeof documentary !== "undefined" ? documentary : [] ],
+    [ "movie", "movie-list", "movie-search", "movie-count", "renderMovie", "movies", () => typeof movie !== "undefined" ? movie : [] ],
+    [ "comedy", "comedy-list", "comedy-search", "comedy-count", "renderComedy", "specials", () => typeof comedy !== "undefined" ? comedy : [] ],
+    [ "webseries", "webseries-list", "webseries-search", "webseries-count", "renderWebSeries", "web series", () => typeof webseries !== "undefined" ? webseries : [] ],
+    [ "games", "games-list", "games-search", "games-count", "renderGames", "games", () => typeof games !== "undefined" ? games : [] ],
+    [ "books", "books-list", "books-search", "books-count", "renderBooks", "books", () => typeof books !== "undefined" ? books : [] ],
+    [ "gamevideo", "gamevideo-list", "gamevideo-search", "gamevideo-count", "renderGameVideo", "game videos", () => typeof gamevideo !== "undefined" ? gamevideo : [] ],
+    [ "gamemovie", "gamemovie-list", "gamemovie-search", "gamemovie-count", "renderGameMovie", "game movies", () => typeof gamemovie !== "undefined" ? gamemovie : [] ],
+    [ "bookvideo", "bookvideo-list", "bookvideo-search", "bookvideo-count", "renderBookVideo", "book videos", () => typeof bookvideo !== "undefined" ? bookvideo : [] ],
+    [ "bookmovie", "bookmovie-list", "bookmovie-search", "bookmovie-count", "renderBookMovie", "book movies", () => typeof bookmovie !== "undefined" ? bookmovie : [] ],
+    [ "presentations", "presentations-list", "presentations-search", "presentations-count", "renderPresentations", "presentations", () => typeof presentations !== "undefined" ? presentations : [] ],
+    [ "bookmarks", "bookmark-list", "bookmark-search", "bookmark-count", "renderBookmarks", "bookmarks", () => typeof bookmarks !== "undefined" ? bookmarks : [] ]
+  ].forEach(def => {
+    const searchId = def[2];
+    const renderName = def[4];
+    TERMINALS[def[0]] = {
+      containerId: def[1],
+      searchId: searchId,
+      countId: def[3],
+      renderName: renderName,
+      noun: def[5],
+      items: def[6],
+      render: () => {
+        const s = document.getElementById(searchId);
+        window[renderName](s ? s.value : "");
+      }
+    };
+  });
+  const TERMINAL_SUFFIX = {
+    video: "videos",
+    podcast: "podcasts",
+    documentary: "documentary",
+    movie: "movie",
+    comedy: "comedy",
+    webseries: "webseries",
+    games: "games",
+    books: "books",
+    gamevideo: "gamevideo",
+    gamemovie: "gamemovie",
+    bookvideo: "bookvideo",
+    bookmovie: "bookmovie",
+    presentations: "presentations",
+    bookmarks: "bookmarks"
+  };
+  const filters = {};
+  Object.keys(TERMINALS).forEach(type => {
+    filters[type] = {
+      mode: "and",
+      include: new Set,
+      exclude: new Set,
+      query: []
+    };
+  });
+  let pop = null;
+
+  function mapKey(type) {
+    return `px:tagmap:${type}`;
+  }
+
+  function getRegistry() {
+    const r = appGet(REG_KEY, null);
+    return r && typeof r === "object" ? r : {};
+  }
+
+  function getMap(type) {
+    const m = appGet(mapKey(type), null);
+    return m && typeof m === "object" ? m : {};
+  }
+
+  function normalizeName(raw) {
+    return String(raw || "").replace(/^#+/, "").replace(/[,\s]+/g, " ").trim().slice(0, MAX_NAME).trim();
+  }
+
+  function tagsFor(type, id) {
+    const a = getMap(type)[String(id)];
+    return Array.isArray(a) ? a : [];
+  }
+
+  function hueOf(reg, key) {
+    const e = reg[key];
+    return e && typeof e.hue === "number" ? e.hue : 190;
+  }
+
+  function nextHue(reg) {
+    const used = {};
+    Object.keys(reg).forEach(k => {
+      used[reg[k].hue] = (used[reg[k].hue] || 0) + 1;
+    });
+    let best = HUES[0];
+    let bestCount = Infinity;
+    HUES.forEach(h => {
+      const n = used[h] || 0;
+      if (n < bestCount) {
+        best = h;
+        bestCount = n;
+      }
+    });
+    return best;
+  }
+
+  function createTag(rawName) {
+    const name = normalizeName(rawName);
+    if (!name) return null;
+    const key = name.toLowerCase();
+    const reg = getRegistry();
+    if (reg[key]) return key;
+    const next = Object.assign({}, reg);
+    next[key] = {
+      name: name,
+      hue: nextHue(reg),
+      created: Date.now()
+    };
+    appSet(REG_KEY, next);
+    return key;
+  }
+
+  function setTagOnIds(type, ids, key, on) {
+    const map = Object.assign({}, getMap(type));
+    ids.forEach(raw => {
+      const id = String(raw);
+      const set = new Set(map[id] || []);
+      if (on) set.add(key); else set.delete(key);
+      if (set.size) map[id] = Array.from(set); else delete map[id];
+    });
+    appSet(mapKey(type), map);
+  }
+
+  function replaceKeyEverywhere(from, to) {
+    Object.keys(TERMINALS).forEach(type => {
+      const map = Object.assign({}, getMap(type));
+      let changed = false;
+      Object.keys(map).forEach(id => {
+        const arr = map[id];
+        if (!Array.isArray(arr) || arr.indexOf(from) === -1) return;
+        const set = new Set(arr.filter(k => k !== from));
+        if (to) set.add(to);
+        if (set.size) map[id] = Array.from(set); else delete map[id];
+        changed = true;
+      });
+      if (changed) appSet(mapKey(type), map);
+      const f = filters[type];
+      [ "include", "exclude" ].forEach(which => {
+        if (f[which].has(from)) {
+          f[which].delete(from);
+          if (to) f[which].add(to);
+        }
+      });
+    });
+  }
+
+  function renameTag(oldKey, rawName) {
+    const name = normalizeName(rawName);
+    if (!name) return {
+      ok: false,
+      reason: "empty"
+    };
+    const newKey = name.toLowerCase();
+    const reg = getRegistry();
+    const cur = reg[oldKey];
+    if (!cur) return {
+      ok: false,
+      reason: "missing"
+    };
+    if (newKey !== oldKey && reg[newKey]) return {
+      ok: false,
+      reason: "exists"
+    };
+    const next = Object.assign({}, reg);
+    delete next[oldKey];
+    next[newKey] = Object.assign({}, cur, {
+      name: name
+    });
+    appSet(REG_KEY, next);
+    if (newKey !== oldKey) replaceKeyEverywhere(oldKey, newKey);
+    return {
+      ok: true,
+      key: newKey,
+      name: name
+    };
+  }
+
+  function mergeTag(from, to) {
+    const reg = getRegistry();
+    if (!reg[from] || !reg[to] || from === to) return false;
+    const next = Object.assign({}, reg);
+    delete next[from];
+    appSet(REG_KEY, next);
+    replaceKeyEverywhere(from, to);
+    return true;
+  }
+
+  function deleteTag(key) {
+    const reg = getRegistry();
+    if (!reg[key]) return false;
+    const next = Object.assign({}, reg);
+    delete next[key];
+    appSet(REG_KEY, next);
+    replaceKeyEverywhere(key, null);
+    return true;
+  }
+
+  function recolorTag(key, hue) {
+    const reg = getRegistry();
+    if (!reg[key]) return;
+    const next = Object.assign({}, reg);
+    next[key] = Object.assign({}, reg[key], {
+      hue: hue
+    });
+    appSet(REG_KEY, next);
+  }
+
+  function counts(type) {
+    const cfg = TERMINALS[type];
+    const ids = new Set(cfg.items().map(o => String(o.id)));
+    const map = getMap(type);
+    const out = {};
+    Object.keys(map).forEach(id => {
+      if (!ids.has(id) || !Array.isArray(map[id])) return;
+      map[id].forEach(k => {
+        out[k] = (out[k] || 0) + 1;
+      });
+    });
+    return out;
+  }
+
+  function totalCounts() {
+    const out = {};
+    Object.keys(TERMINALS).forEach(type => {
+      const c = counts(type);
+      Object.keys(c).forEach(k => {
+        out[k] = (out[k] || 0) + c[k];
+      });
+    });
+    return out;
+  }
+
+  function pruneFilter(f, reg) {
+    [ "include", "exclude" ].forEach(which => {
+      Array.from(f[which]).forEach(k => {
+        if (!reg[k]) f[which].delete(k);
+      });
+    });
+  }
+
+  function filterActive(f) {
+    return f.include.size > 0 || f.exclude.size > 0 || f.query.length > 0;
+  }
+
+  function parseQuery(text) {
+    const source = String(text || "");
+    if (source.indexOf("#") === -1) return {
+      text: source,
+      tags: []
+    };
+    const reg = getRegistry();
+    const keys = Object.keys(reg);
+    const tags = [];
+    const rest = [];
+    source.split(/\s+/).forEach(tok => {
+      if (tok.length > 1 && tok[0] === "#") {
+        const k = tok.slice(1).toLowerCase();
+        if (reg[k] || keys.some(x => x.indexOf(k) === 0)) {
+          tags.push(k);
+          return;
+        }
+      }
+      if (tok) rest.push(tok);
+    });
+    if (!tags.length) return {
+      text: source,
+      tags: []
+    };
+    return {
+      text: rest.join(" "),
+      tags: tags
+    };
+  }
+
+  function applyFilter(type, items) {
+    const f = filters[type];
+    if (!f) return items;
+    const reg = getRegistry();
+    pruneFilter(f, reg);
+    if (!filterActive(f)) return items;
+    const map = getMap(type);
+    const keys = Object.keys(reg);
+    const inc = Array.from(f.include);
+    const exc = Array.from(f.exclude);
+    const qs = f.query.map(tok => reg[tok] ? [ tok ] : keys.filter(k => k.indexOf(tok) === 0));
+    return items.filter(o => {
+      const arr = map[String(o.id)];
+      const set = arr && arr.length ? new Set(arr) : EMPTY;
+      for (let i = 0; i < exc.length; i++) if (set.has(exc[i])) return false;
+      if (inc.length) {
+        if (f.mode === "or") {
+          if (!inc.some(k => set.has(k))) return false;
+        } else if (!inc.every(k => set.has(k))) return false;
+      }
+      for (let i = 0; i < qs.length; i++) if (!qs[i].some(k => set.has(k))) return false;
+      return true;
+    });
+  }
+
+  function timing() {
+    return window.PxMotion ? window.PxMotion.timing() : null;
+  }
+
+  function play(el, frames, opts) {
+    return window.PxMotion ? window.PxMotion.play(el, frames, opts) : null;
+  }
+
+  function announce(type, message) {
+    const bar = document.getElementById(`px-bar-${type}`);
+    const live = bar && bar.querySelector(".px-sr");
+    if (live) live.textContent = message;
+  }
+
+  function rerender(type) {
+    const cfg = TERMINALS[type];
+    const container = document.getElementById(cfg.containerId);
+    const checked = container ? new Set(Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.id)) : new Set;
+    cfg.render();
+    if (container && checked.size) {
+      container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        if (checked.has(cb.dataset.id)) {
+          cb.checked = true;
+          cb.dispatchEvent(new Event("change"));
+        }
+      });
+    }
+  }
+
+  function onFilterChange(type) {
+    rerender(type);
+    refreshBar(type);
+  }
+
+  function toggleInclude(type, key) {
+    const f = filters[type];
+    if (f.include.has(key)) f.include.delete(key); else {
+      f.include.add(key);
+      f.exclude.delete(key);
+    }
+    onFilterChange(type);
+  }
+
+  function cycleFilter(type, key) {
+    const f = filters[type];
+    if (f.include.has(key)) {
+      f.include.delete(key);
+      f.exclude.add(key);
+    } else if (f.exclude.has(key)) {
+      f.exclude.delete(key);
+    } else {
+      f.include.add(key);
+    }
+    onFilterChange(type);
+  }
+
+  function fillChips(type, row, id) {
+    const reg = getRegistry();
+    const keys = tagsFor(type, id).filter(k => reg[k]);
+    const prevRaw = row.dataset.pxKeys;
+    const prev = new Set(prevRaw ? prevRaw.split("\u0001") : []);
+    const first = prevRaw === undefined;
+    row.dataset.pxKeys = keys.join("\u0001");
+    row.textContent = "";
+    const t = timing();
+    keys.slice(0, MAX_CHIPS).forEach(k => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "px-chip";
+      chip.style.setProperty("--h", String(hueOf(reg, k)));
+      chip.textContent = reg[k].name;
+      chip.title = `Filter by ${reg[k].name}`;
+      chip.setAttribute("aria-label", `Filter by tag ${reg[k].name}`);
+      chip.addEventListener("click", e => {
+        e.stopPropagation();
+        toggleInclude(type, k);
+      });
+      row.appendChild(chip);
+      if (!first && !prev.has(k) && t) {
+        play(chip, t.move ? [ {
+          opacity: 0,
+          transform: "scale(0.6)"
+        }, {
+          opacity: 1,
+          transform: "scale(1)"
+        } ] : [ {
+          opacity: 0
+        }, {
+          opacity: 1
+        } ], {
+          duration: t.dur,
+          easing: t.move ? "cubic-bezier(0.34, 1.56, 0.64, 1)" : t.ease
+        });
+      }
+    });
+    if (keys.length > MAX_CHIPS) {
+      const more = document.createElement("button");
+      more.type = "button";
+      more.className = "px-chip px-chip--more";
+      more.textContent = `+${keys.length - MAX_CHIPS}`;
+      more.title = keys.slice(MAX_CHIPS).map(k => reg[k].name).join(", ");
+      more.setAttribute("aria-label", `${keys.length - MAX_CHIPS} more tags. Edit tags`);
+      more.addEventListener("click", e => {
+        e.stopPropagation();
+        openPicker(more, type, [ id ], row.dataset.pxName || "item");
+      });
+      row.appendChild(more);
+    }
+  }
+
+  function decorateRow(type, li, item) {
+    if (!li || !item || item.id === undefined || item.id === null) return;
+    if (li.querySelector(".bookmark-edit-input")) return;
+    const label = String(item.name || item.title || "item");
+    li.dataset.pxId = String(item.id);
+    const row = document.createElement("div");
+    row.className = "px-tagrow";
+    row.dataset.pxName = label;
+    row.addEventListener("keydown", e => e.stopPropagation());
+    fillChips(type, row, item.id);
+    const anchor = li.querySelector(".media-row-play-btn") || li.querySelector(":scope > button");
+    li.insertBefore(row, anchor);
+    if (!li.querySelector('input[type="checkbox"]')) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "px-row-cb";
+      cb.dataset.id = String(item.id);
+      cb.setAttribute("aria-label", `Select ${label}`);
+      cb.addEventListener("click", e => e.stopPropagation());
+      li.insertBefore(cb, li.firstChild);
+    }
+  }
+
+  function refreshRows(type, ids) {
+    const container = document.getElementById(TERMINALS[type].containerId);
+    if (!container) return;
+    const set = new Set(ids.map(String));
+    container.querySelectorAll("li[data-px-id]").forEach(li => {
+      if (!set.has(li.dataset.pxId)) return;
+      const row = li.querySelector(".px-tagrow");
+      if (row) fillChips(type, row, li.dataset.pxId);
+    });
+  }
+
+  function refreshAllRows(type) {
+    const container = document.getElementById(TERMINALS[type].containerId);
+    if (!container) return;
+    container.querySelectorAll("li[data-px-id]").forEach(li => {
+      const row = li.querySelector(".px-tagrow");
+      if (row) fillChips(type, row, li.dataset.pxId);
+    });
+  }
+
+  function makeControl(text, act) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "px-ctl";
+    b.dataset.act = act;
+    b.textContent = text;
+    return b;
+  }
+
+  function selectedIds(type) {
+    const container = document.getElementById(TERMINALS[type].containerId);
+    if (!container) return [];
+    return Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.id);
+  }
+
+  function clearQueryTokens(type) {
+    const cfg = TERMINALS[type];
+    const f = filters[type];
+    const s = document.getElementById(cfg.searchId);
+    if (!s || !f.query.length) return;
+    const drop = new Set(f.query.map(q => `#${q}`));
+    s.value = s.value.split(/\s+/).filter(tok => tok && !drop.has(tok.toLowerCase())).join(" ");
+  }
+
+  function ensureBar(type) {
+    const cfg = TERMINALS[type];
+    if (document.getElementById(`px-bar-${type}`)) return;
+    const anchor = document.getElementById(cfg.countId) || document.getElementById(cfg.containerId);
+    if (!anchor || !anchor.parentNode) return;
+    const f = filters[type];
+    const bar = document.createElement("div");
+    bar.className = "px-bar";
+    bar.id = `px-bar-${type}`;
+    bar.setAttribute("role", "group");
+    bar.setAttribute("aria-label", "Filter by tag");
+    const list = document.createElement("div");
+    list.className = "px-bar-tags";
+    const actions = document.createElement("div");
+    actions.className = "px-bar-actions";
+    const mode = makeControl("Match all", "mode");
+    mode.title = "Choose whether items need all or any of the included tags";
+    const clear = makeControl("Clear filter", "clear");
+    clear.hidden = true;
+    const manage = makeControl("Manage tags", "manage");
+    const live = document.createElement("span");
+    live.className = "px-sr";
+    live.setAttribute("role", "status");
+    live.setAttribute("aria-live", "polite");
+    actions.append(mode, clear);
+    actions.append(manage);
+    bar.append(list, actions, live);
+    anchor.parentNode.insertBefore(bar, anchor);
+    bar.addEventListener("keydown", e => e.stopPropagation());
+    mode.addEventListener("click", () => {
+      f.mode = f.mode === "and" ? "or" : "and";
+      onFilterChange(type);
+    });
+    clear.addEventListener("click", () => {
+      f.include.clear();
+      f.exclude.clear();
+      clearQueryTokens(type);
+      onFilterChange(type);
+    });
+    manage.addEventListener("click", () => openManager(manage, type));
+  }
+
+  function refreshBar(type) {
+    const bar = document.getElementById(`px-bar-${type}`);
+    if (!bar) return;
+    const f = filters[type];
+    const reg = getRegistry();
+    pruneFilter(f, reg);
+    const c = counts(type);
+    const keys = Object.keys(reg).filter(k => c[k] > 0 || f.include.has(k) || f.exclude.has(k)).sort((a, b) => (c[b] || 0) - (c[a] || 0) || reg[a].name.localeCompare(reg[b].name));
+    const list = bar.querySelector(".px-bar-tags");
+    const active = document.activeElement;
+    const focusKey = active && list.contains(active) ? active.dataset.key : null;
+    list.textContent = "";
+    keys.forEach(k => {
+      const state = f.include.has(k) ? "include" : f.exclude.has(k) ? "exclude" : "off";
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "px-bar-chip";
+      chip.dataset.key = k;
+      chip.dataset.state = state;
+      chip.style.setProperty("--h", String(hueOf(reg, k)));
+      chip.setAttribute("aria-pressed", state === "include" ? "true" : state === "exclude" ? "mixed" : "false");
+      chip.setAttribute("aria-label", `${reg[k].name}, ${c[k] || 0} items, ${state === "off" ? "not filtering" : state === "include" ? "including" : "excluding"}`);
+      const label = document.createElement("span");
+      label.textContent = reg[k].name;
+      const count = document.createElement("span");
+      count.className = "px-count";
+      count.textContent = String(c[k] || 0);
+      chip.append(label, count);
+      chip.addEventListener("click", () => cycleFilter(type, k));
+      list.appendChild(chip);
+    });
+    if (focusKey) {
+      const again = Array.from(list.children).find(el => el.dataset && el.dataset.key === focusKey);
+      if (again) again.focus({
+        preventScroll: true
+      });
+    }
+    const mode = bar.querySelector('[data-act="mode"]');
+    mode.textContent = f.mode === "and" ? "Match all" : "Match any";
+    mode.disabled = f.include.size < 2;
+    bar.querySelector('[data-act="clear"]').hidden = !filterActive(f);
+  }
+
+  function closePop(restoreFocus) {
+    if (!pop) return;
+    const p = pop;
+    pop = null;
+    document.removeEventListener("pointerdown", p.onDown, true);
+    document.removeEventListener("scroll", p.onScroll, true);
+    window.removeEventListener("resize", p.onResize);
+    if (p.anchor) p.anchor.removeAttribute("aria-expanded");
+    const el = p.el;
+    el.style.pointerEvents = "none";
+    const t = timing();
+    const dur = t ? Math.round(t.dur / 2) : 0;
+    const anim = t ? play(el, [ {
+      opacity: 1
+    }, {
+      opacity: 0
+    } ], {
+      duration: dur,
+      easing: "ease-in",
+      fill: "forwards"
+    }) : null;
+    if (anim) {
+      anim.onfinish = () => el.remove();
+      anim.oncancel = () => el.remove();
+      window.setTimeout(() => el.remove(), dur + 120);
+    } else {
+      el.remove();
+    }
+    if (restoreFocus && p.anchor && document.contains(p.anchor)) p.anchor.focus({
+      preventScroll: true
+    });
+  }
+
+  function placePop(el, anchor) {
+    const r = anchor.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const vh = window.innerHeight;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    const gap = 6;
+    const left = Math.min(Math.max(8, r.right - w), Math.max(8, vw - w - 8));
+    let top = r.bottom + gap;
+    let above = false;
+    if (top + h > vh - 8 && r.top - gap - h > 8) {
+      top = r.top - gap - h;
+      above = true;
+    }
+    top = Math.max(8, Math.min(top, Math.max(8, vh - h - 8)));
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+    const ox = Math.max(0, Math.min(w, r.left + r.width / 2 - left));
+    el.style.transformOrigin = `${ox}px ${above ? "100%" : "0"}`;
+    return above;
+  }
+
+  function mountPop(kind, anchor, el) {
+    document.body.appendChild(el);
+    const above = placePop(el, anchor);
+    const t = timing();
+    if (t) {
+      const dy = above ? 4 : -4;
+      play(el, t.move ? [ {
+        opacity: 0,
+        transform: `translateY(${dy}px) scale(0.97)`
+      }, {
+        opacity: 1,
+        transform: "translateY(0) scale(1)"
+      } ] : [ {
+        opacity: 0
+      }, {
+        opacity: 1
+      } ], {
+        duration: t.dur,
+        easing: t.ease
+      });
+    }
+    anchor.setAttribute("aria-expanded", "true");
+    const onDown = e => {
+      if (el.contains(e.target) || e.target === anchor || anchor.contains(e.target)) return;
+      closePop(false);
+    };
+    const onScroll = e => {
+      if (el.contains(e.target)) return;
+      closePop(false);
+    };
+    const onResize = () => closePop(false);
+    document.addEventListener("pointerdown", onDown, true);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    pop = {
+      kind: kind,
+      el: el,
+      anchor: anchor,
+      onDown: onDown,
+      onScroll: onScroll,
+      onResize: onResize
+    };
+  }
+
+  function openPicker(anchor, type, ids, title) {
+    if (pop && pop.anchor === anchor && pop.kind === "picker") {
+      closePop(true);
+      return;
+    }
+    closePop(false);
+    const idList = ids.map(String);
+    if (!idList.length) return;
+    const cfg = TERMINALS[type];
+    const subject = idList.length === 1 ? title : `${idList.length} ${cfg.noun}`;
+    const el = document.createElement("div");
+    el.className = "px-pop";
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-label", `Tags for ${title}`);
+    const head = document.createElement("div");
+    head.className = "px-pop-title";
+    head.textContent = title;
+    head.title = title;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "px-pop-input";
+    input.placeholder = "Find or create a tag";
+    input.maxLength = MAX_NAME;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.setAttribute("aria-label", "Find or create a tag");
+    const list = document.createElement("ul");
+    list.className = "px-pop-list";
+    list.setAttribute("role", "listbox");
+    list.setAttribute("aria-label", "Tags");
+    const hint = document.createElement("div");
+    hint.className = "px-pop-hint";
+    hint.textContent = "Enter toggles a tag. Shift+Enter creates a new one.";
+    el.append(head, input, list, hint);
+    const state = {
+      rows: [],
+      active: -1
+    };
+
+    function setActive(i, scroll) {
+      state.active = i;
+      Array.from(list.children).forEach((li, idx) => {
+        li.classList.toggle("px-active", idx === i);
+        li.setAttribute("aria-selected", idx === i ? "true" : "false");
+      });
+      const node = list.children[i];
+      if (scroll && node && typeof node.scrollIntoView === "function") node.scrollIntoView({
+        block: "nearest"
+      });
+    }
+
+    function renderList(keepActive) {
+      const reg = getRegistry();
+      const map = getMap(type);
+      const q = normalizeName(input.value).toLowerCase();
+      const c = counts(type);
+      const keys = Object.keys(reg).filter(k => !q || reg[k].name.toLowerCase().indexOf(q) !== -1).sort((a, b) => reg[a].name.localeCompare(reg[b].name));
+      const rows = keys.map(k => {
+        let n = 0;
+        idList.forEach(id => {
+          const a = map[id];
+          if (a && a.indexOf(k) !== -1) n++;
+        });
+        return {
+          kind: "tag",
+          key: k,
+          n: n
+        };
+      });
+      if (q && !reg[q]) rows.push({
+        kind: "create",
+        name: normalizeName(input.value)
+      });
+      state.rows = rows;
+      let active = -1;
+      if (keepActive && state.active >= 0 && state.active < rows.length) {
+        active = state.active;
+      } else if (q && rows.length) {
+        const exact = rows.findIndex(r => r.kind === "tag" && r.key === q);
+        const firstTag = rows.findIndex(r => r.kind === "tag");
+        const create = rows.findIndex(r => r.kind === "create");
+        active = exact >= 0 ? exact : firstTag >= 0 ? firstTag : create >= 0 ? create : 0;
+      }
+      list.textContent = "";
+      if (!rows.length) {
+        const empty = document.createElement("li");
+        empty.className = "px-pop-empty";
+        empty.textContent = "No tags yet. Type a name to create one.";
+        list.appendChild(empty);
+      }
+      rows.forEach((row, i) => {
+        const li = document.createElement("li");
+        li.setAttribute("role", "option");
+        if (row.kind === "create") {
+          li.className = "px-create";
+          const mark = document.createElement("span");
+          mark.className = "px-mark";
+          mark.textContent = "+";
+          const name = document.createElement("span");
+          name.className = "px-name";
+          name.textContent = `Create \u201C${row.name}\u201D`;
+          li.append(mark, name);
+        } else {
+          const dot = document.createElement("span");
+          dot.className = "px-dot";
+          dot.style.setProperty("--h", String(hueOf(reg, row.key)));
+          const name = document.createElement("span");
+          name.className = "px-name";
+          name.textContent = reg[row.key].name;
+          const mark = document.createElement("span");
+          mark.className = "px-mark";
+          mark.textContent = row.n === idList.length ? "\u2713" : row.n > 0 ? "\u2013" : "";
+          const count = document.createElement("span");
+          count.className = "px-count";
+          count.textContent = String(c[row.key] || 0);
+          li.append(dot, name, mark, count);
+          li.setAttribute("aria-checked", row.n === idList.length ? "true" : row.n > 0 ? "mixed" : "false");
+        }
+        li.addEventListener("mouseenter", () => setActive(i, false));
+        li.addEventListener("click", () => activate(i));
+        list.appendChild(li);
+      });
+      setActive(rows.length ? active : -1, false);
+    }
+
+    function activate(i) {
+      const row = state.rows[i];
+      if (!row) return;
+      let keepActive = true;
+      if (row.kind === "create") {
+        const key = createTag(row.name);
+        if (!key) return;
+        setTagOnIds(type, idList, key, true);
+        input.value = "";
+        keepActive = false;
+        announce(type, `Tag ${row.name} created and added to ${subject}`);
+      } else {
+        const reg = getRegistry();
+        const turnOn = row.n !== idList.length;
+        setTagOnIds(type, idList, row.key, turnOn);
+        announce(type, `Tag ${reg[row.key].name} ${turnOn ? "added to" : "removed from"} ${subject}`);
+      }
+      refreshRows(type, idList);
+      refreshBar(type);
+      renderList(keepActive);
+    }
+
+    input.addEventListener("input", () => renderList(false));
+    input.addEventListener("keydown", e => {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!state.rows.length) return;
+        const step = e.key === "ArrowDown" ? 1 : -1;
+        const next = state.active < 0 ? step > 0 ? 0 : state.rows.length - 1 : (state.active + step + state.rows.length) % state.rows.length;
+        setActive(next, true);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const create = e.shiftKey ? state.rows.findIndex(r => r.kind === "create") : -1;
+        if (create >= 0) activate(create); else if (state.active >= 0) activate(state.active);
+      }
+    });
+    el.addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closePop(true);
+      }
+    });
+    renderList(false);
+    mountPop("picker", anchor, el);
+    input.focus({
+      preventScroll: true
+    });
+  }
+
+  function afterTagsChanged() {
+    Object.keys(TERMINALS).forEach(type => {
+      if (filterActive(filters[type])) {
+        rerender(type);
+      } else {
+        refreshAllRows(type);
+      }
+      refreshBar(type);
+    });
+  }
+
+  function openManager(anchor, type) {
+    if (pop && pop.anchor === anchor && pop.kind === "manager") {
+      closePop(true);
+      return;
+    }
+    closePop(false);
+    const el = document.createElement("div");
+    el.className = "px-pop px-pop--wide";
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-label", "Manage tags");
+    const head = document.createElement("div");
+    head.className = "px-pop-title";
+    head.textContent = "Manage tags";
+    const list = document.createElement("ul");
+    list.className = "px-mlist";
+    const status = document.createElement("div");
+    status.className = "px-pop-hint";
+    status.setAttribute("role", "status");
+    status.setAttribute("aria-live", "polite");
+    el.append(head, list, status);
+
+    function say(message) {
+      status.textContent = message;
+      announce(type, message);
+    }
+
+    function renderManager() {
+      const reg = getRegistry();
+      const c = totalCounts();
+      const keys = Object.keys(reg).sort((a, b) => reg[a].name.localeCompare(reg[b].name));
+      list.textContent = "";
+      if (!keys.length) {
+        const empty = document.createElement("li");
+        empty.className = "px-pop-empty";
+        empty.textContent = "No tags yet. Tick some items and use Tag Selected to create one.";
+        list.appendChild(empty);
+        return;
+      }
+      keys.forEach(k => {
+        const entry = reg[k];
+        const li = document.createElement("li");
+        li.className = "px-mrow";
+        const dotBtn = document.createElement("button");
+        dotBtn.type = "button";
+        dotBtn.className = "px-dot-btn";
+        dotBtn.setAttribute("aria-label", `Change color of ${entry.name}`);
+        dotBtn.setAttribute("aria-expanded", "false");
+        const dot = document.createElement("span");
+        dot.className = "px-dot";
+        dot.style.setProperty("--h", String(hueOf(reg, k)));
+        dotBtn.appendChild(dot);
+        const name = document.createElement("input");
+        name.type = "text";
+        name.className = "px-mname";
+        name.value = entry.name;
+        name.dataset.orig = entry.name;
+        name.maxLength = MAX_NAME;
+        name.spellcheck = false;
+        name.setAttribute("aria-label", `Rename ${entry.name}`);
+        const count = document.createElement("span");
+        count.className = "px-mcount";
+        count.textContent = String(c[k] || 0);
+        count.title = "Items with this tag";
+        const merge = document.createElement("select");
+        merge.className = "px-mmerge";
+        merge.setAttribute("aria-label", `Merge ${entry.name} into another tag`);
+        const base = document.createElement("option");
+        base.value = "";
+        base.textContent = "Merge into";
+        merge.appendChild(base);
+        keys.filter(o => o !== k).forEach(o => {
+          const opt = document.createElement("option");
+          opt.value = o;
+          opt.textContent = reg[o].name;
+          merge.appendChild(opt);
+        });
+        merge.disabled = keys.length < 2;
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "px-mdel";
+        del.textContent = "Delete";
+        del.setAttribute("aria-label", `Delete ${entry.name}`);
+        li.append(dotBtn, name, count, merge, del);
+        list.appendChild(li);
+        let hues = null;
+        dotBtn.addEventListener("click", () => {
+          if (hues) {
+            hues.remove();
+            hues = null;
+            dotBtn.setAttribute("aria-expanded", "false");
+            return;
+          }
+          hues = document.createElement("div");
+          hues.className = "px-hues";
+          HUES.forEach(h => {
+            const b = document.createElement("button");
+            b.type = "button";
+            b.style.setProperty("--h", String(h));
+            b.setAttribute("aria-label", `Hue ${h}`);
+            b.setAttribute("aria-pressed", h === hueOf(reg, k) ? "true" : "false");
+            b.addEventListener("click", () => {
+              recolorTag(k, h);
+              afterTagsChanged();
+              renderManager();
+              say(`Color changed for ${entry.name}`);
+            });
+            hues.appendChild(b);
+          });
+          li.appendChild(hues);
+          dotBtn.setAttribute("aria-expanded", "true");
+        });
+        name.addEventListener("change", () => {
+          const res = renameTag(k, name.value);
+          if (res.ok) {
+            afterTagsChanged();
+            renderManager();
+            say(`Renamed to ${res.name}`);
+          } else {
+            name.value = entry.name;
+            name.classList.add("px-err");
+            window.setTimeout(() => name.classList.remove("px-err"), 1400);
+            say(res.reason === "exists" ? "That name is already used. Use Merge into instead." : "A tag needs a name.");
+          }
+        });
+        name.addEventListener("keydown", e => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            name.blur();
+          }
+        });
+        merge.addEventListener("change", () => {
+          if (!merge.value) return;
+          const target = reg[merge.value] ? reg[merge.value].name : "";
+          if (mergeTag(k, merge.value)) {
+            afterTagsChanged();
+            renderManager();
+            say(`Merged ${entry.name} into ${target}`);
+          }
+        });
+        let timer = 0;
+        del.addEventListener("click", () => {
+          if (!del.classList.contains("px-confirm")) {
+            del.classList.add("px-confirm");
+            del.textContent = "Confirm";
+            timer = window.setTimeout(() => {
+              del.classList.remove("px-confirm");
+              del.textContent = "Delete";
+            }, 3000);
+            return;
+          }
+          window.clearTimeout(timer);
+          if (deleteTag(k)) {
+            afterTagsChanged();
+            renderManager();
+            say(`Deleted ${entry.name}`);
+          }
+        });
+      });
+    }
+
+    el.addEventListener("keydown", e => {
+      e.stopPropagation();
+      if (e.key !== "Escape") return;
+      const t = e.target;
+      if (t && t.classList && t.classList.contains("px-mname") && t.value !== t.dataset.orig) {
+        t.value = t.dataset.orig;
+        return;
+      }
+      e.preventDefault();
+      closePop(true);
+    });
+    renderManager();
+    mountPop("manager", anchor, el);
+    const firstFocus = el.querySelector("input, button");
+    if (firstFocus) firstFocus.focus({
+      preventScroll: true
+    });
+  }
+
+  function wrapListRenderer() {
+    const previous = renderListBatched;
+    const byContainer = {};
+    Object.keys(TERMINALS).forEach(type => {
+      byContainer[TERMINALS[type].containerId] = type;
+    });
+    renderListBatched = function(container, items, buildRowFn) {
+      const type = container && byContainer[container.id];
+      if (!type || !Array.isArray(items)) return previous(container, items, buildRowFn);
+      let filtered = items;
+      try {
+        filtered = applyFilter(type, items);
+      } catch (e) {
+        filtered = items;
+      }
+      const decorated = (item, i) => {
+        const li = buildRowFn(item, i);
+        try {
+          decorateRow(type, li, item);
+        } catch (e) {}
+        return li;
+      };
+      return previous(container, filtered, decorated);
+    };
+  }
+
+  function wrapRenderers() {
+    Object.keys(TERMINALS).forEach(type => {
+      const cfg = TERMINALS[type];
+      const original = window[cfg.renderName];
+      if (typeof original !== "function") return;
+      window[cfg.renderName] = function(filter) {
+        let text = filter;
+        try {
+          const parsed = parseQuery(filter);
+          filters[type].query = parsed.tags;
+          text = parsed.tags.length ? parsed.text : filter;
+        } catch (e) {
+          filters[type].query = [];
+        }
+        const result = original.call(this, text);
+        try {
+          refreshBar(type);
+        } catch (e) {}
+        return result;
+      };
+    });
+  }
+
+  function init() {
+    if (typeof appGet !== "function" || typeof appSet !== "function" || typeof renderListBatched !== "function") return;
+    wrapListRenderer();
+    wrapRenderers();
+    Object.keys(TERMINALS).forEach(type => {
+      try {
+        ensureBar(type);
+        refreshBar(type);
+      } catch (e) {}
+    });
+    Object.keys(TERMINALS).forEach(type => {
+      const btn = document.getElementById(type === "music" ? "btn-tag-selected" : `btn-tag-selected-${TERMINAL_SUFFIX[type] || type}`);
+      if (!btn) return;
+      const cfg = TERMINALS[type];
+      btn.addEventListener("click", () => {
+        const ids = selectedIds(type);
+        if (!ids.length) {
+          if (btn.dataset.pxBusy) return;
+          const original = btn.textContent;
+          btn.dataset.pxBusy = "1";
+          btn.textContent = `Select ${cfg.noun} first`;
+          window.setTimeout(() => {
+            btn.textContent = original;
+            delete btn.dataset.pxBusy;
+          }, 1600);
+          return;
+        }
+        openPicker(btn, type, ids, `${ids.length} selected`);
+      });
+    });
+  }
+
+  window.PxTags = {
+    tagsFor: tagsFor,
+    registry: getRegistry,
+    counts: counts
+  };
+
+  init();
 })();
